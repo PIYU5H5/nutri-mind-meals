@@ -15,89 +15,78 @@ serve(async (req) => {
     const { foodName } = await req.json();
     console.log('Analyzing food:', foodName);
 
-    const nutritionixAppId = Deno.env.get('NUTRITIONIX_APP_ID');
-    const nutritionixAppKey = Deno.env.get('NUTRITIONIX_APP_KEY');
-    const lovableApiKey = Deno.env.get('LOVABLE_API_KEY');
+    const geminiApiKey = Deno.env.get('GEMINI_API_KEY');
 
-    if (!nutritionixAppId || !nutritionixAppKey) {
-      throw new Error('Nutritionix API credentials not configured');
+    if (!geminiApiKey) {
+      throw new Error('Gemini API key not configured');
     }
 
-    // Get nutrition data from Nutritionix
-    const nutritionixResponse = await fetch(
-      'https://trackapi.nutritionix.com/v2/natural/nutrients',
+    // Use Gemini to analyze food and get nutrition data
+    const nutritionResponse = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${geminiApiKey}`,
       {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-app-id': nutritionixAppId,
-          'x-app-key': nutritionixAppKey,
         },
-        body: JSON.stringify({ query: foodName }),
+        body: JSON.stringify({
+          contents: [{
+            parts: [{
+              text: `Analyze the nutrition information for "${foodName}". Provide a JSON response with the following structure:
+{
+  "nutrition": {
+    "food_name": "standardized food name",
+    "serving_qty": number,
+    "serving_unit": "unit (e.g., cup, piece, gram)",
+    "calories": number,
+    "protein": number,
+    "carbs": number,
+    "fat": number,
+    "fiber": number,
+    "sugar": number
+  },
+  "alternatives": [
+    {
+      "name": "healthier alternative name",
+      "reason": "why it's healthier"
+    }
+  ]
+}
+
+Provide realistic nutrition values based on standard serving sizes. If calories are over 200, suggest 3 healthier alternatives. Otherwise, return an empty alternatives array.`
+            }]
+          }],
+          generationConfig: {
+            temperature: 0.4,
+            topP: 0.95,
+            topK: 40,
+            maxOutputTokens: 1024,
+          }
+        }),
       }
     );
 
-    if (!nutritionixResponse.ok) {
-      throw new Error('Failed to fetch nutrition data');
+    if (!nutritionResponse.ok) {
+      const errorText = await nutritionResponse.text();
+      console.error('Gemini API error:', errorText);
+      throw new Error('Failed to analyze food with Gemini');
     }
 
-    const nutritionixData = await nutritionixResponse.json();
-    const food = nutritionixData.foods[0];
+    const geminiData = await nutritionResponse.json();
+    const responseText = geminiData.candidates[0].content.parts[0].text;
+    console.log('Gemini response:', responseText);
 
-    const nutritionData = {
-      food_name: food.food_name,
-      serving_qty: food.serving_qty,
-      serving_unit: food.serving_unit,
-      calories: food.nf_calories,
-      protein: food.nf_protein,
-      carbs: food.nf_total_carbohydrate,
-      fat: food.nf_total_fat,
-      fiber: food.nf_dietary_fiber,
-      sugar: food.nf_sugars,
-    };
+    // Extract JSON from response
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error('Failed to parse nutrition data from AI response');
+    }
+
+    const parsedData = JSON.parse(jsonMatch[0]);
+    const nutritionData = parsedData.nutrition;
+    const alternatives = parsedData.alternatives || [];
 
     console.log('Nutrition data retrieved:', nutritionData);
-
-    // Get AI alternatives if food is high calorie
-    let alternatives = [];
-    if (lovableApiKey && nutritionData.calories > 200) {
-      try {
-        const aiResponse = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${lovableApiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: 'google/gemini-2.5-flash',
-            messages: [
-              {
-                role: 'system',
-                content: 'You are a nutrition expert. Suggest 3 healthier alternatives to the given food. Return ONLY a JSON array of objects with "name" and "reason" fields.'
-              },
-              {
-                role: 'user',
-                content: `Food: ${nutritionData.food_name}, Calories: ${nutritionData.calories}, Protein: ${nutritionData.protein}g, Carbs: ${nutritionData.carbs}g, Fat: ${nutritionData.fat}g. Suggest 3 healthier alternatives.`
-              }
-            ],
-          }),
-        });
-
-        if (aiResponse.ok) {
-          const aiData = await aiResponse.json();
-          const content = aiData.choices[0].message.content;
-          console.log('AI response:', content);
-          
-          // Extract JSON from response
-          const jsonMatch = content.match(/\[[\s\S]*\]/);
-          if (jsonMatch) {
-            alternatives = JSON.parse(jsonMatch[0]);
-          }
-        }
-      } catch (error) {
-        console.error('Error getting AI alternatives:', error);
-      }
-    }
 
     return new Response(
       JSON.stringify({ nutrition: nutritionData, alternatives }),
