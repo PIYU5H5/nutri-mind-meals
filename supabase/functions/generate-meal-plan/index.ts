@@ -15,9 +15,9 @@ serve(async (req) => {
     const { height, weight, bmi, dietType, goal } = await req.json();
     console.log('Generating meal plan for:', { height, weight, bmi, dietType, goal });
 
-    const lovableApiKey = Deno.env.get('LOVABLE_API_KEY');
-    if (!lovableApiKey) {
-      throw new Error('AI API key not configured');
+    const geminiApiKey = Deno.env.get('GEMINI_API_KEY');
+    if (!geminiApiKey) {
+      throw new Error('Gemini API key not configured');
     }
 
     const prompt = `Generate a detailed daily meal plan for a person with:
@@ -53,33 +53,35 @@ Return the response as a JSON object with this structure:
   }
 }`;
 
-    const aiResponse = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${lovableApiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'google/gemini-2.5-flash',
-        messages: [
-          {
-            role: 'system',
-            content: 'You are a professional nutritionist. Create detailed, realistic meal plans. Return ONLY valid JSON.'
-          },
-          {
-            role: 'user',
-            content: prompt
+    const aiResponse = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${geminiApiKey}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{
+              text: `You are a professional nutritionist. Return ONLY valid JSON.\n\n${prompt}`
+            }]
+          }],
+          generationConfig: {
+            temperature: 0.4,
+            topP: 0.95,
+            topK: 40,
+            maxOutputTokens: 1024,
           }
-        ],
-      }),
-    });
+        }),
+      }
+    );
 
     if (!aiResponse.ok) {
       throw new Error('Failed to generate meal plan from AI');
     }
 
     const aiData = await aiResponse.json();
-    const content = aiData.choices[0].message.content;
+    const content = aiData.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
     console.log('AI response:', content);
 
     // Extract JSON from response

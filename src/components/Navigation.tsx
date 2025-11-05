@@ -15,7 +15,7 @@ const Navigation = () => {
   ];
 
   return (
-    <nav className="sticky top-0 z-50 w-full border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+    <nav className="sticky top-0 z-50 w-full border-b border-border/60 bg-background/70 backdrop-blur-xl supports-[backdrop-filter]:bg-background/50">
       <div className="container mx-auto px-4">
         <div className="flex h-16 items-center justify-between">
           <Link to="/" className="flex items-center gap-2 font-bold text-xl text-primary">
@@ -32,10 +32,10 @@ const Navigation = () => {
                   key={item.path}
                   to={item.path}
                   className={cn(
-                    "flex items-center gap-2 px-4 py-2 rounded-lg transition-all duration-200",
+                    "flex items-center gap-2 px-4 py-2 rounded-lg transition-all duration-200 hover:shadow-md",
                     isActive
                       ? "bg-primary text-primary-foreground shadow-md"
-                      : "text-muted-foreground hover:text-foreground hover:bg-secondary"
+                      : "text-muted-foreground hover:text-foreground hover:bg-secondary/70"
                   )}
                 >
                   <Icon className="h-4 w-4" />
@@ -53,7 +53,7 @@ const Navigation = () => {
                 <Link
                   key={item.path}
                   to={item.path}
-                  className="p-2 text-muted-foreground hover:text-primary"
+                  className="p-2 text-muted-foreground hover:text-primary transition-colors"
                 >
                   <Icon className="h-5 w-5" />
                 </Link>

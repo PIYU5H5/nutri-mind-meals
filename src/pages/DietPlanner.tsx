@@ -6,7 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Loader2, Sparkles } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { supabase } from "@/integrations/supabase/client";
+import { callGeminiJSON } from "@/lib/gemini";
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from "recharts";
 
 interface MealPlan {
@@ -46,13 +46,31 @@ const DietPlanner = () => {
     try {
       const bmi = (parseFloat(weight) / Math.pow(parseFloat(height) / 100, 2)).toFixed(1);
 
-      const { data, error } = await supabase.functions.invoke('generate-meal-plan', {
-        body: { height, weight, bmi, dietType, goal }
-      });
+      const ai = await callGeminiJSON(`Generate a detailed daily meal plan for a person with:
+- Height: ${height}cm
+- Weight: ${weight}kg
+- BMI: ${bmi}
+- Diet Type: ${dietType}
+- Goal: ${goal}
 
-      if (error) throw error;
+Provide a structured meal plan with:
+1. Breakfast (with specific foods and portions)
+2. Lunch (with specific foods and portions)
+3. Dinner (with specific foods and portions)
+4. Snacks (2-3 healthy options)
 
-      setMealPlan(data);
+For each meal, also provide estimated totals (daily): calories, protein (g), carbs (g), fat (g).
+
+Return ONLY valid JSON with this structure:
+{
+  "breakfast": "meal description",
+  "lunch": "meal description",
+  "dinner": "meal description",
+  "snacks": "snack description",
+  "totals": { "calories": number, "protein": number, "carbs": number, "fat": number }
+}`);
+
+      setMealPlan(ai as MealPlan);
       toast({
         title: "Meal plan generated!",
         description: "Your personalized diet plan is ready",

@@ -1,10 +1,12 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Search, Loader2, Apple, X, PieChart } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { supabase } from "@/integrations/supabase/client";
+import { callGeminiJSON } from "@/lib/gemini";
 import { PieChart as RechartsPie, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from "recharts";
 
 interface NutritionData {
@@ -37,6 +39,49 @@ const FoodAnalyzer = () => {
   const [loading, setLoading] = useState(false);
   const [foodItems, setFoodItems] = useState<FoodItem[]>([]);
   const { toast } = useToast();
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [suggestLoading, setSuggestLoading] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const debounceRef = useRef<number | null>(null);
+  const [useWeight, setUseWeight] = useState(false);
+  const [weightGrams, setWeightGrams] = useState("");
+
+  useEffect(() => {
+    if (!foodName || foodName.trim().length < 2) {
+      setSuggestions([]);
+      return;
+    }
+
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+    }
+
+    debounceRef.current = window.setTimeout(async () => {
+      try {
+        setSuggestLoading(true);
+        const data = await callGeminiJSON(
+          `Given a partial food query: "${foodName.trim()}"\nReturn ONLY a JSON array of up to 8 likely food names that users commonly mean. Example: ["chicken breast", "grilled chicken", "chicken salad"].`
+        );
+        if (Array.isArray(data)) {
+          setSuggestions(data as string[]);
+          setShowSuggestions(true);
+        } else if (Array.isArray((data as any)?.suggestions)) {
+          setSuggestions((data as any).suggestions as string[]);
+          setShowSuggestions(true);
+        } else {
+          setSuggestions([]);
+        }
+      } catch {
+        setSuggestions([]);
+      } finally {
+        setSuggestLoading(false);
+      }
+    }, 350);
+
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [foodName]);
 
   const analyzeFood = async () => {
     if (!foodName.trim()) {
@@ -47,33 +92,57 @@ const FoodAnalyzer = () => {
       return;
     }
 
+    if (useWeight) {
+      const grams = parseFloat(weightGrams);
+      if (!grams || grams <= 0) {
+        toast({
+          title: "Enter valid weight",
+          description: "Please provide weight in grams greater than 0",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
     setLoading(true);
 
     try {
-      const { data, error } = await supabase.functions.invoke('analyze-food', {
-        body: { foodName: foodName.trim() }
-      });
+      const weightClause = useWeight && parseFloat(weightGrams) > 0
+        ? `\nIf weight in grams is provided, compute nutrition for EXACTLY that weight, ignoring default serving sizes. Use: ${parseFloat(weightGrams)} grams. Set nutrition.serving_qty to ${parseFloat(weightGrams)} and nutrition.serving_unit to "g".`
+        : "";
+      const ai = await callGeminiJSON(
+        `Analyze the nutrition information for "${foodName.trim()}".${weightClause} Provide a JSON response with the following structure:\n{\n  \"nutrition\": {\n    \"food_name\": \"standardized food name\",\n    \"serving_qty\": number,\n    \"serving_unit\": \"unit (e.g., cup, piece, gram)\",\n    \"calories\": number,\n    \"protein\": number,\n    \"carbs\": number,\n    \"fat\": number,\n    \"fiber\": number,\n    \"sugar\": number\n  },\n  \"alternatives\": [\n    {\n      \"name\": \"healthier alternative name\",\n      \"reason\": \"why it's healthier\"\n    }\n  ]\n}\nProvide realistic values based on standard serving sizes. If calories are over 200, suggest 3 alternatives. Otherwise, return an empty alternatives array.`
+      );
 
-      if (error) throw error;
+      if (!ai?.nutrition ||
+          typeof (ai as any).nutrition.calories !== 'number' ||
+          !(ai as any).nutrition.food_name ||
+          Number.isNaN((ai as any).nutrition.calories) ||
+          (ai as any).nutrition.calories <= 0) {
+        throw new Error('Invalid or unknown food name');
+      }
 
       const newItem: FoodItem = {
         id: Date.now().toString(),
-        nutrition: data.nutrition,
-        alternatives: data.alternatives || []
+        nutrition: ai.nutrition,
+        alternatives: ai.alternatives || []
       };
 
       setFoodItems(prev => [...prev, newItem]);
       setFoodName("");
+      setSuggestions([]);
+      setShowSuggestions(false);
+      setWeightGrams("");
       
       toast({
         title: "Food added!",
-        description: `${data.nutrition.food_name} has been added to your tracker`,
+        description: `${newItem.nutrition.food_name} has been added to your tracker`,
       });
     } catch (error: any) {
       console.error('Error analyzing food:', error);
       toast({
-        title: "Analysis failed",
-        description: error.message || "Could not analyze food. Please try again.",
+        title: "Invalid food name",
+        description: (error as any).message || "Please enter a valid food name.",
         variant: "destructive",
       });
     } finally {
@@ -119,13 +188,44 @@ const FoodAnalyzer = () => {
           </CardHeader>
           <CardContent>
             <div className="flex gap-4">
-              <Input
-                placeholder="Enter food name..."
-                value={foodName}
-                onChange={(e) => setFoodName(e.target.value)}
-                onKeyPress={(e) => e.key === 'Enter' && analyzeFood()}
-                className="text-lg"
-              />
+              <div className="relative flex-1">
+                <Input
+                  placeholder="Enter food name..."
+                  value={foodName}
+                  onChange={(e) => setFoodName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') analyzeFood();
+                    if (e.key === 'Escape') setShowSuggestions(false);
+                  }}
+                  className="text-lg"
+                  onFocus={() => { if (suggestions.length) setShowSuggestions(true); }}
+                  onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+                />
+                {showSuggestions && (suggestions.length > 0 || suggestLoading) && (
+                  <div className="absolute z-20 mt-1 w-full rounded-md border bg-background shadow-md max-h-56 overflow-auto">
+                    {suggestLoading && (
+                      <div className="px-3 py-2 text-sm text-muted-foreground">Searching…</div>
+                    )}
+                    {!suggestLoading && suggestions.map((s, i) => (
+                      <button
+                        key={i}
+                        type="button"
+                        className="w-full text-left px-3 py-2 hover:bg-accent"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => {
+                          setFoodName(s);
+                          setShowSuggestions(false);
+                        }}
+                      >
+                        {s}
+                      </button>
+                    ))}
+                    {!suggestLoading && suggestions.length === 0 && (
+                      <div className="px-3 py-2 text-sm text-muted-foreground">No suggestions</div>
+                    )}
+                  </div>
+                )}
+              </div>
               <Button 
                 onClick={analyzeFood}
                 disabled={loading}
@@ -144,6 +244,26 @@ const FoodAnalyzer = () => {
                   </>
                 )}
               </Button>
+            </div>
+
+            <div className="mt-3 flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <Checkbox id="use-weight" checked={useWeight} onCheckedChange={(v: any) => setUseWeight(Boolean(v))} />
+                <Label htmlFor="use-weight" className="text-sm text-muted-foreground">I know the weight</Label>
+              </div>
+              <div className="flex items-center gap-2">
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  placeholder="e.g. 150"
+                  className="w-28"
+                  value={weightGrams}
+                  onChange={(e) => setWeightGrams(e.target.value)}
+                  disabled={!useWeight}
+                />
+                <span className="text-sm text-muted-foreground">g</span>
+              </div>
             </div>
           </CardContent>
         </Card>
