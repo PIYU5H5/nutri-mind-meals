@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -6,7 +6,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Search, Loader2, Apple, X, PieChart } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { callGeminiJSON } from "@/lib/gemini";
+import { callAIJSON } from "@/lib/ai";
 import { PieChart as RechartsPie, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from "recharts";
 
 interface NutritionData {
@@ -40,53 +40,53 @@ const FoodAnalyzer = () => {
   const [foodItems, setFoodItems] = useState<FoodItem[]>([]);
   const { toast } = useToast();
   const [suggestions, setSuggestions] = useState<string[]>([]);
-  const [suggestLoading, setSuggestLoading] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
-  const debounceRef = useRef<number | null>(null);
   const [useWeight, setUseWeight] = useState(false);
   const [weightGrams, setWeightGrams] = useState("");
+  const lastApiCallRef = useRef<number>(0);
+  const MIN_API_CALL_INTERVAL = 2000; // Minimum 2 seconds between API calls
+
+  // Static food suggestions to avoid API quota exhaustion
+  // Removed Gemini API autocomplete to prevent quota issues
+  const commonFoods = [
+    "apple", "banana", "orange", "chicken breast", "salmon", "rice", "pasta",
+    "bread", "eggs", "milk", "yogurt", "cheese", "broccoli", "carrot", "spinach",
+    "potato", "tomato", "avocado", "oats", "quinoa", "almonds", "peanut butter"
+  ];
 
   useEffect(() => {
-    if (!foodName || foodName.trim().length < 2) {
+    if (!foodName || foodName.trim().length < 1) {
       setSuggestions([]);
       return;
     }
 
-    if (debounceRef.current) {
-      clearTimeout(debounceRef.current);
-    }
-
-    debounceRef.current = window.setTimeout(async () => {
-      try {
-        setSuggestLoading(true);
-        const data = await callGeminiJSON(
-          `Given a partial food query: "${foodName.trim()}"\nReturn ONLY a JSON array of up to 8 likely food names that users commonly mean. Example: ["chicken breast", "grilled chicken", "chicken salad"].`
-        );
-        if (Array.isArray(data)) {
-          setSuggestions(data as string[]);
-          setShowSuggestions(true);
-        } else if (Array.isArray((data as any)?.suggestions)) {
-          setSuggestions((data as any).suggestions as string[]);
-          setShowSuggestions(true);
-        } else {
-          setSuggestions([]);
-        }
-      } catch {
-        setSuggestions([]);
-      } finally {
-        setSuggestLoading(false);
-      }
-    }, 350);
-
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-    };
+    // Simple client-side filtering instead of API calls
+    const query = foodName.trim().toLowerCase();
+    const filtered = commonFoods
+      .filter(food => food.toLowerCase().includes(query))
+      .slice(0, 8);
+    
+    setSuggestions(filtered);
+    setShowSuggestions(filtered.length > 0);
   }, [foodName]);
 
   const analyzeFood = async () => {
     if (!foodName.trim()) {
       toast({
         title: "Please enter a food name",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Rate limiting: prevent too many API calls
+    const now = Date.now();
+    const timeSinceLastCall = now - lastApiCallRef.current;
+    if (timeSinceLastCall < MIN_API_CALL_INTERVAL) {
+      const waitTime = ((MIN_API_CALL_INTERVAL - timeSinceLastCall) / 1000).toFixed(1);
+      toast({
+        title: "Please wait",
+        description: `Wait ${waitTime} seconds before making another request to avoid quota limits.`,
         variant: "destructive",
       });
       return;
@@ -105,12 +105,13 @@ const FoodAnalyzer = () => {
     }
 
     setLoading(true);
+    lastApiCallRef.current = now;
 
     try {
       const weightClause = useWeight && parseFloat(weightGrams) > 0
         ? `\nIf weight in grams is provided, compute nutrition for EXACTLY that weight, ignoring default serving sizes. Use: ${parseFloat(weightGrams)} grams. Set nutrition.serving_qty to ${parseFloat(weightGrams)} and nutrition.serving_unit to "g".`
         : "";
-      const ai = await callGeminiJSON(
+      const ai = await callAIJSON(
         `Analyze the nutrition information for "${foodName.trim()}".${weightClause} Provide a JSON response with the following structure:\n{\n  \"nutrition\": {\n    \"food_name\": \"standardized food name\",\n    \"serving_qty\": number,\n    \"serving_unit\": \"unit (e.g., cup, piece, gram)\",\n    \"calories\": number,\n    \"protein\": number,\n    \"carbs\": number,\n    \"fat\": number,\n    \"fiber\": number,\n    \"sugar\": number\n  },\n  \"alternatives\": [\n    {\n      \"name\": \"healthier alternative name\",\n      \"reason\": \"why it's healthier\"\n    }\n  ]\n}\nProvide realistic values based on standard serving sizes. If calories are over 200, suggest 3 alternatives. Otherwise, return an empty alternatives array.`
       );
 
@@ -140,9 +141,22 @@ const FoodAnalyzer = () => {
       });
     } catch (error: any) {
       console.error('Error analyzing food:', error);
+      
+      // Better error messages for quota issues
+      let errorTitle = "Error analyzing food";
+      let errorDescription = error.message || "Please try again.";
+      
+      if (error.message?.includes('quota') || error.message?.includes('429') || error.status === 429) {
+        errorTitle = "API Quota Exceeded";
+        errorDescription = "You've reached your API limit. Please wait a few minutes before trying again, or check your Gemini API plan and billing.";
+      } else if (error.message?.includes('rate limit')) {
+        errorTitle = "Rate Limit Exceeded";
+        errorDescription = "Too many requests. Please wait a moment before trying again.";
+      }
+      
       toast({
-        title: "Invalid food name",
-        description: (error as any).message || "Please enter a valid food name.",
+        title: errorTitle,
+        description: errorDescription,
         variant: "destructive",
       });
     } finally {
@@ -201,12 +215,9 @@ const FoodAnalyzer = () => {
                   onFocus={() => { if (suggestions.length) setShowSuggestions(true); }}
                   onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
                 />
-                {showSuggestions && (suggestions.length > 0 || suggestLoading) && (
+                {showSuggestions && suggestions.length > 0 && (
                   <div className="absolute z-20 mt-1 w-full rounded-md border bg-background shadow-md max-h-56 overflow-auto">
-                    {suggestLoading && (
-                      <div className="px-3 py-2 text-sm text-muted-foreground">Searching…</div>
-                    )}
-                    {!suggestLoading && suggestions.map((s, i) => (
+                    {suggestions.map((s, i) => (
                       <button
                         key={i}
                         type="button"
@@ -220,9 +231,6 @@ const FoodAnalyzer = () => {
                         {s}
                       </button>
                     ))}
-                    {!suggestLoading && suggestions.length === 0 && (
-                      <div className="px-3 py-2 text-sm text-muted-foreground">No suggestions</div>
-                    )}
                   </div>
                 )}
               </div>

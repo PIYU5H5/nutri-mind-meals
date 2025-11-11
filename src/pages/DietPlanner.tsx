@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -6,7 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Loader2, Sparkles } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { callGeminiJSON } from "@/lib/gemini";
+import { callAIJSON } from "@/lib/ai";
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from "recharts";
 
 interface MealPlan {
@@ -30,6 +30,8 @@ const DietPlanner = () => {
   const [loading, setLoading] = useState(false);
   const [mealPlan, setMealPlan] = useState<MealPlan | null>(null);
   const { toast } = useToast();
+  const lastApiCallRef = useRef<number>(0);
+  const MIN_API_CALL_INTERVAL = 3000; // Minimum 3 seconds between API calls
 
   const generatePlan = async () => {
     if (!height || !weight || !dietType || !goal) {
@@ -40,13 +42,27 @@ const DietPlanner = () => {
       return;
     }
 
+    // Rate limiting: prevent too many API calls
+    const now = Date.now();
+    const timeSinceLastCall = now - lastApiCallRef.current;
+    if (timeSinceLastCall < MIN_API_CALL_INTERVAL) {
+      const waitTime = ((MIN_API_CALL_INTERVAL - timeSinceLastCall) / 1000).toFixed(1);
+      toast({
+        title: "Please wait",
+        description: `Wait ${waitTime} seconds before generating another plan to avoid quota limits.`,
+        variant: "destructive",
+      });
+      return;
+    }
+
     setLoading(true);
     setMealPlan(null);
+    lastApiCallRef.current = now;
 
     try {
       const bmi = (parseFloat(weight) / Math.pow(parseFloat(height) / 100, 2)).toFixed(1);
 
-      const ai = await callGeminiJSON(`Generate a detailed daily meal plan for a person with:
+      const ai = await callAIJSON(`Generate a detailed daily meal plan for a person with:
 - Height: ${height}cm
 - Weight: ${weight}kg
 - BMI: ${bmi}
@@ -77,9 +93,22 @@ Return ONLY valid JSON with this structure:
       });
     } catch (error: any) {
       console.error('Error generating meal plan:', error);
+      
+      // Better error messages for quota issues
+      let errorTitle = "Generation failed";
+      let errorDescription = error.message || "Could not generate meal plan. Please try again.";
+      
+      if (error.message?.includes('quota') || error.message?.includes('429') || error.status === 429) {
+        errorTitle = "API Quota Exceeded";
+        errorDescription = "You've reached your API limit. Please wait a few minutes before trying again, or check your Gemini API plan and billing.";
+      } else if (error.message?.includes('rate limit')) {
+        errorTitle = "Rate Limit Exceeded";
+        errorDescription = "Too many requests. Please wait a moment before trying again.";
+      }
+      
       toast({
-        title: "Generation failed",
-        description: error.message || "Could not generate meal plan. Please try again.",
+        title: errorTitle,
+        description: errorDescription,
         variant: "destructive",
       });
     } finally {
